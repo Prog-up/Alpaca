@@ -1,4 +1,5 @@
 data/com.jeffser.Alpaca.desktop.in
+data/com.jeffser.Alpaca.QuickAsk.desktop.in
 data/com.jeffser.Alpaca.gschema.xml
 data/com.jeffser.Alpaca.metainfo.xml.in
 data/com.jeffser.Alpaca.SearchProvider.desktop.in
@@ -131,6 +132,7 @@ src/widgets/tools/tools.py
 src/widgets/__init__.py
 src/widgets/attachments.py
 src/widgets/chat.py
+src/widgets/agent.py
 src/widgets/dialog.py
 src/widgets/guide.py
 src/widgets/message.py

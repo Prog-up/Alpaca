@@ -84,7 +84,8 @@ class BaseInstance:
             except:
                 pass
 
-            chat_element.busy = True
+            if chat_element.active_message is None:
+                chat_element.busy = True
             GLib.idle_add(chat_element.set_visible_child_name, 'content')
 
         messages = chat_element.convert_to_json()[:list(chat_element.container).index(bot_message)]
@@ -222,6 +223,7 @@ class BaseInstance:
             if self.properties.get('seed', 0) != 0:
                 params["seed"] = self.properties.get('seed')
 
+        success = True
         if chat.busy:
             try:
                 bot_message.block_container.clear()
@@ -237,6 +239,7 @@ class BaseInstance:
                     if not chat.busy:
                         break
             except Exception as e:
+                success = False
                 dialog.simple_error(
                     parent = bot_message.get_root(),
                     title = _('Instance Error'),
@@ -246,7 +249,7 @@ class BaseInstance:
                 logger.exception(e)
                 if self.row:
                     GLib.idle_add(self.row.get_parent().unselect_all)
-        bot_message.finish_generation()
+        bot_message.finish_generation(success=success)
 
     def generate_chat_title(self, chat, prompt:str, fallback_model:str):
         class ChatTitle(BaseModel): # Pydantic

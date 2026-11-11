@@ -5,7 +5,6 @@ from gi.repository import Adw, Gtk, Gio, Gdk, GLib, Xdp
 import odf.opendocument as odfopen
 import odf.table as odftable
 from pydbus import SessionBus, Variant
-from markitdown import MarkItDown
 from html2text import html2text
 from io import BytesIO
 from PIL import Image
@@ -27,6 +26,7 @@ def extract_content(file_type:str, file_path:str) -> str:
         with open(file_path, 'r') as f:
             return f.read()
     elif file_type in ('pdf', 'docx', 'pptx', 'youtube'):
+        from markitdown import MarkItDown
         return MarkItDown(enable_plugins=False).convert(file_path).text_content
     elif file_type == 'odt':
         doc = odfopen.load(file_path)
@@ -78,7 +78,7 @@ def extract_content(file_type:str, file_path:str) -> str:
             return "Fetching this URL is disallowed by robots.txt"
 
 def extract_online_image(image_url: str, max_size: int) -> str | None:
-    image_response = requests.get(url=image_url, headers={"User-Agent": "AlpacaBot"})
+    image_response = requests.get(url=image_url, headers={"User-Agent": "AlpacaBot"}, timeout=(5, 15))
     image_response.raise_for_status()
     complete = False
     if image_response.status_code == 206:
@@ -95,14 +95,8 @@ def extract_online_image(image_url: str, max_size: int) -> str | None:
             raise requests.exceptions.ContentDecodingError('Failed to decode chunked response')
         complete = bool(int(total) == int(end) + 1)
     if image_response.status_code == 200 or complete:
-        image_data = None
-        image_path = os.path.join(str(cache_dir), 'image_web.jpg')
-        with open(image_path, 'wb') as handler:
-            handler.write(image_response.content)
-        image_data = extract_image(image_path, max_size)
-        #if os.path.isfile(image_path):
-            #os.remove(image_path)
-        return image_data
+        # Each request owns its buffer; concurrent images must not share a file.
+        return extract_image(BytesIO(image_response.content), max_size)
 
 def extract_image(image_path:str, max_size:int) -> str:
     #Normal Image: 640, Profile Pictures: 128
@@ -669,6 +663,4 @@ class GlobalAttachmentButton(Gtk.Button):
         popup.set_parent(self)
         popup.set_pointing_to(rect)
         popup.popup()
-
-
 

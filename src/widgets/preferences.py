@@ -18,7 +18,13 @@ class PreferencesDialog(Adw.PreferencesDialog):
     check_ollama_update_switch = Gtk.Template.Child()
     zoom_spin = Gtk.Template.Child()
     regenerate_after_edit = Gtk.Template.Child()
+    queue_prompts_switch = Gtk.Template.Child()
     image_size_spin = Gtk.Template.Child()
+    agent_mode = Gtk.Template.Child()
+    agent_auto_start = Gtk.Template.Child()
+    agent_working_directory = Gtk.Template.Child()
+    agent_max_calls = Gtk.Template.Child()
+    agent_max_seconds = Gtk.Template.Child()
 
     #AUDIO
     mic_group = Gtk.Template.Child()
@@ -45,6 +51,7 @@ class PreferencesDialog(Adw.PreferencesDialog):
     ]
 
     activity_terminal_type = Gtk.Template.Child()
+    activity_terminal_auto_execute = Gtk.Template.Child()
     activity_terminal_ssh_user = Gtk.Template.Child()
     activity_terminal_ssh_ip = Gtk.Template.Child()
     activity_terminal_flatpak_warning = Gtk.Template.Child()
@@ -110,6 +117,13 @@ class PreferencesDialog(Adw.PreferencesDialog):
         self.check_ollama_update_switch.set_visible(CAN_SELF_MANAGE_OLLAMA)
         self.settings.bind('zoom', self.zoom_spin, 'value', Gio.SettingsBindFlags.DEFAULT)
         self.settings.bind('regenerate-after-edit', self.regenerate_after_edit, 'active', Gio.SettingsBindFlags.DEFAULT)
+        self.settings.bind('queue-prompts', self.queue_prompts_switch, 'active', Gio.SettingsBindFlags.DEFAULT)
+        for key, widget, property_name in [('agent-mode', self.agent_mode, 'active'),
+                                           ('agent-auto-start', self.agent_auto_start, 'active'),
+                                           ('agent-working-directory', self.agent_working_directory, 'text'),
+                                           ('agent-max-calls', self.agent_max_calls, 'value'),
+                                           ('agent-max-seconds', self.agent_max_seconds, 'value')]:
+            self.settings.bind(key, widget, property_name, Gio.SettingsBindFlags.DEFAULT)
         self.mic_group.set_visible(importlib.util.find_spec('whisper'))
 
         if sys.platform in ('win32', 'darwin'): # MacOS and Windows
@@ -159,6 +173,7 @@ class PreferencesDialog(Adw.PreferencesDialog):
         self.activity_web_browser_engine_changed(self.activity_web_browser_engine)
 
         self.settings.bind('activity-terminal-type', self.activity_terminal_type, 'selected', Gio.SettingsBindFlags.DEFAULT)
+        self.settings.bind('activity-terminal-auto-execute', self.activity_terminal_auto_execute, 'active', Gio.SettingsBindFlags.DEFAULT)
         self.activity_terminal_type.set_factory(dropdown_factory)
         self.settings.bind('activity-terminal-username', self.activity_terminal_ssh_user, 'text', Gio.SettingsBindFlags.DEFAULT)
         self.settings.bind('activity-terminal-ip', self.activity_terminal_ssh_ip, 'text', Gio.SettingsBindFlags.DEFAULT)

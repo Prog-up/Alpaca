@@ -6,12 +6,15 @@ Handles the chat widget
 import gi
 from gi.repository import Gtk, Gio, Adw, Gdk, GLib
 import logging, os, datetime, random, json, threading, re, importlib.util
+from collections import deque
+from weakref import WeakSet
 from ..constants import SAMPLE_PROMPTS, cache_dir
 from ..sql_manager import generate_uuid, prettify_model_name, generate_numbered_name, Instance as SQL
 from . import dialog, voice, models, blocks
 from .message import Message
 
 logger = logging.getLogger(__name__)
+loaded_chats = WeakSet()
 
 
 @Gtk.Template(resource_path='/com/jeffser/Alpaca/widgets/chat/folder.ui')
@@ -309,6 +312,8 @@ class Folder(Adw.NavigationPage):
             # Show New Stack Page
             root = self.get_root()
             root.chat_bin.set_child(new_chat)
+            root.global_footer.update_prompt_queue(new_chat)
+            root.global_footer.update_agent(new_chat)
             chat_search_query = root.searchentry_messages.get_text()
             if chat_search_query:
                 GLib.idle_add(new_chat.on_search, chat_search_query)
@@ -335,7 +340,7 @@ class Folder(Adw.NavigationPage):
             if model_index == -1:
                 model_index = find_model_index(self.get_root().get_current_instance().properties.get('default_model'))
 
-            if model_index and model_index != -1:
+            if model_index >= 0:
                 self.get_root().global_footer.model_selector.set_selected(model_index)
 
 @Gtk.Template(resource_path='/com/jeffser/Alpaca/widgets/chat/template_selector.ui')
@@ -472,6 +477,10 @@ class Chat(Gtk.Stack):
         super().__init__()
         self.set_name(name)
         self.busy = False
+        self.pending_prompts = deque()
+        self.active_message = None
+        self.agent_session = None
+        loaded_chats.add(self)
         self.chat_id = chat_id
         self.folder_id = folder_id
         self.is_template = is_template
@@ -523,10 +532,33 @@ class Chat(Gtk.Stack):
         self.set_visible_child_name('no-results' if searching and len(list(self.container)) > 0 else 'welcome-screen')
 
     def stop_message(self):
+        if self.agent_session:
+            self.agent_session.stop()
+        self.busy = False
+        self.pending_prompts.clear()
+        root = self.get_root() or self.row.get_root()
+        if root and root.get_current_chat() is self:
+            root.global_footer.toggle_action_button(True)
+            root.global_footer.update_prompt_queue(self)
+
+    def finish_generation(self, bot_message, success=True):
+        if self.active_message is not None and self.active_message is not bot_message:
+            return
+        self.active_message = None
         self.busy = False
         root = self.get_root() or self.row.get_root()
-        if root:
+        if not success:
+            self.pending_prompts.clear()
+        if root and root.get_current_chat() is self:
             root.global_footer.toggle_action_button(True)
+        from . import prompt_queue
+        if self.agent_session:
+            if root and root.get_current_chat() is self:
+                root.global_footer.update_agent(self)
+            from ..agent import TERMINAL_STATES
+            if self.agent_session.controller.phase not in TERMINAL_STATES:
+                return
+        prompt_queue.drain(root, self)
 
     def unload_messages(self):
         for widget in list(self.container):
@@ -539,8 +571,9 @@ class Chat(Gtk.Stack):
         GLib.idle_add(self.update_visibility)
 
     def load_messages(self):
-        def load_message(message_element, content):
-            attachments = SQL.get_attachments(message_element)
+        from . import agent
+        agent.restore(self)
+        def render_message(message_element, content, attachments):
             message_element.block_container.set_content(content)
 
             for attachment in attachments:
@@ -551,6 +584,10 @@ class Chat(Gtk.Stack):
                     content=attachment[3]
                 )
 
+        def load_message(message_element, content):
+            attachments = SQL.get_attachments(message_element)
+            GLib.idle_add(render_message, message_element, content, attachments)
+
         messages = SQL.get_messages(self)
         for message in messages:
             message_element = Message(
@@ -559,7 +596,7 @@ class Chat(Gtk.Stack):
                 mode=('user', 'assistant', 'system').index(message[1]),
                 author=message[2]
             )
-            threading.Thread(target=load_message, args=(message_element, message[4])).start()
+            threading.Thread(target=load_message, args=(message_element, message[4]), daemon=True).start()
             self.container.append(message_element)
         GLib.idle_add(self.update_visibility)
 
@@ -1030,6 +1067,7 @@ class ChatRow(Gtk.ListBoxRow):
 
     def delete(self):
         window = self.get_root()
+        self.chat.stop_message()
         list_box = self.get_parent()
         list_box.remove(self)
         SQL.delete_chat(self.chat)
@@ -1153,4 +1191,3 @@ class ChatRow(Gtk.ListBoxRow):
             callback = lambda option, options=options: options[option](),
             items = options.keys()
         )
-

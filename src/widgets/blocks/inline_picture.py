@@ -1,7 +1,7 @@
 # inline_picture.py
 
 from gi.repository import Gtk, Gio, Adw, GLib, Gdk, GObject
-import logging, base64, re
+import logging, base64, re, threading
 from .. import dialog, activities, attachments
 
 logger = logging.getLogger(__name__)
@@ -19,12 +19,20 @@ class InlinePicture(Gtk.ScrolledWindow):
         self.texture = None
         self.content = None
 
+        threading.Thread(target=self.load_image, daemon=True).start()
+
+    def load_image(self):
         try:
-            self.content = attachments.extract_online_image(
-                image_url=self.url,
-                max_size=480
-            )
-            image_data = base64.b64decode(self.content)
+            content = attachments.extract_online_image(image_url=self.url, max_size=480)
+            if content:
+                GLib.idle_add(self.show_image, content)
+        except Exception as error:
+            logger.warning('Could not load inline image %s: %s', self.url, error)
+
+    def show_image(self, content):
+        try:
+            self.content = content
+            image_data = base64.b64decode(content)
             self.texture = Gdk.Texture.new_from_bytes(GLib.Bytes.new(image_data))
             image = Gtk.Picture.new_for_paintable(self.texture)
             image.set_size_request(int((self.texture.get_width() * 240) / self.texture.get_height()), 240)

@@ -74,12 +74,14 @@ blueprints = files(
 
 blueprints = custom_target('blueprints',
   input: blueprints,
-  output: '.',
+  output: 'blueprints.stamp',
   command: [
+    import('python').find_installation('python3'),
+    files('../build-aux/compile-blueprints.py'),
     find_program('blueprint-compiler', version: '>= 0.18.0'),
-    'batch-compile',
-    '@OUTPUT@',
+    meson.current_build_dir(),
     '@CURRENT_SOURCE_DIR@',
+    '@OUTPUT@',
     '@INPUT@'
   ],
 )
@@ -124,6 +126,7 @@ alpaca_sources = [
   'main.py',
   'window.py',
   'quick_ask.py',
+  'agent.py',
   'constants.py',
   'ollama_models.py',
   'sql_manager.py'

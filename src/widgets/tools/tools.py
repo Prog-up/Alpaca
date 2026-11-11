@@ -107,7 +107,7 @@ class Terminal(Base):
     icon_name:str = 'terminal-symbolic'
 
     name:str = 'run_command'
-    description:str = 'Request a shell command to be reviewed and optionally executed by the host application'
+    description:str = 'Run a shell command through the configured terminal connection, asking for confirmation unless automatic execution is enabled'
     properties:list = [
         Property(
             name='command',
@@ -126,17 +126,45 @@ class Terminal(Base):
     required_libraries:list = ['gi.repository.Vte']
 
     global_page = None
+    cancel_event = None
+    connection = None
+    automatic_execution = None
+
+    def wait_for(self, event):
+        if self.cancel_event is None:
+            event.wait()
+            return True
+        while not event.wait(0.05):
+            if self.cancel_event.is_set():
+                return False
+        return not self.cancel_event.is_set()
+
+    def cancel(self):
+        if self.global_page:
+            GLib.idle_add(self.global_page.on_close)
+        if getattr(self, 'confirmation_dialog', None):
+            GLib.idle_add(self.confirmation_dialog.force_close)
 
     def run(self, arguments, messages, bot_message) -> str:
+        self.last_exit_code = None
+        self.last_output = ''
+        self.last_cancelled = False
+        self.confirmation_dialog = None
+        if self.cancel_event is not None and self.cancel_event.is_set():
+            self.last_cancelled = True
+            return 'Command canceled'
         if not arguments.get('command'):
             return "Error: No command was provided"
 
-        self.waiting_confirmation = True
-        self.current_command = ""
+        settings = Gio.Settings(schema_id="com.jeffser.Alpaca")
+        error = None
+        confirmed = threading.Event()
+        automatic = settings.get_boolean('activity-terminal-auto-execute') if self.automatic_execution is None else self.automatic_execution
+        self.current_command = arguments.get('command') if automatic else ""
 
         def dialog_confirmation(cmd:str, confirmation:bool):
             self.current_command = cmd if confirmation else ""
-            self.waiting_confirmation = False
+            confirmed.set()
 
         options = {
             _('Cancel'): {
@@ -148,47 +176,91 @@ class Terminal(Base):
                 'default': True
             }
         }
-        entry_dialog = dialog.Entry(
-            heading=_("Command Execution"),
-            body=arguments.get('explanation'),
-            close_response=list(options.keys())[0],
-            options=options,
-            entries={
-                'placeholder': _("Command"),
-                'css': ['black_background'],
-                'text': arguments.get('command')
-            }
-        )
-        GLib.idle_add(entry_dialog.show, bot_message.get_root())
+        def show_confirmation():
+            nonlocal error
+            try:
+                if self.cancel_event is not None and self.cancel_event.is_set():
+                    confirmed.set()
+                    return
+                entry_dialog = dialog.Entry(
+                    heading=_("Command Execution"),
+                    body=arguments.get('explanation'),
+                    close_response=list(options.keys())[0],
+                    options=options,
+                    entries={
+                        'placeholder': _("Command"),
+                        'css': ['black_background'],
+                        'text': arguments.get('command')
+                    }
+                )
+                self.confirmation_dialog = entry_dialog
+                entry_dialog.show(bot_message.get_root())
+            except Exception as e:
+                error = 'Error: Could not confirm the command: {}'.format(e)
+                confirmed.set()
 
-        while self.waiting_confirmation:
-            continue
+        if not self.current_command:
+            GLib.idle_add(show_confirmation)
+            if not self.wait_for(confirmed):
+                self.last_cancelled = True
+                self.cancel()
+                return 'Command canceled'
 
+        if error:
+            return error
         if not self.current_command:
             return 'The user chose not to execute the command'
 
-        self.waiting_confirmation = True
+        finished = threading.Event()
+        result_text = ""
 
-        if not self.global_page or not self.global_page.get_root():
-            self.global_page = activities.Terminal(
-                language='auto',
-                code_getter=lambda: ';'.join(['clear', self.current_command]),
-                close_callback=lambda: setattr(self, 'waiting_confirmation', False)
-            )
-            chat_element = bot_message.get_ancestor(chat.Chat)
-            GLib.idle_add(activities.show_activity, self.global_page, bot_message.get_root(), not chat_element or not chat_element.chat_id)
+        def on_finish():
+            nonlocal result_text, error
+            try:
+                result_text = self.global_page.get_text().strip('\n')
+                self.last_output = result_text
+                self.last_cancelled = getattr(self.global_page, 'closed', False) is True
+                code = getattr(self.global_page, 'exit_code', None)
+                self.last_exit_code = code if type(code) is int else None
+            except Exception as e:
+                error = 'Error: Could not read the command output: {}'.format(e)
+            finally:
+                finished.set()
 
-        self.global_page.run()
+        def start_command():
+            nonlocal error
+            try:
+                if self.cancel_event is not None and self.cancel_event.is_set():
+                    finished.set()
+                    return
+                if not self.global_page or not self.global_page.get_root():
+                    self.global_page = activities.Terminal(
+                        language='auto',
+                        code_getter=lambda: self.current_command,
+                        close_callback=on_finish
+                    )
+                    chat_element = bot_message.get_ancestor(chat.Chat)
+                    activities.show_activity(self.global_page, bot_message.get_root(), not chat_element or not chat_element.chat_id)
+                self.global_page.close_callback = on_finish
+                self.global_page.connection = self.connection
+                self.global_page.reset(True, True)
+                self.global_page.run()
+            except Exception as e:
+                error = 'Error: Could not execute the command: {}'.format(e)
+                finished.set()
 
-        while self.waiting_confirmation:
-            continue
+        GLib.idle_add(start_command)
+        if not self.wait_for(finished):
+            self.last_cancelled = True
+            self.cancel()
+            return 'Command canceled'
 
-        result_text = self.global_page.get_text().strip('\n').split('\n')[:-1]
-
-        if len(result_text) == 0:
+        if error:
+            return error
+        if not result_text:
             return "The command did not return any text"
 
-        return '```\n{}\n```'.format('\n'.join(result_text))
+        return '```\n{}\n```'.format(result_text)
 
 class BackgroundRemover(Base):
     display_name:str = _('Background Remover')

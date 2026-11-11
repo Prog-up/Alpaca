@@ -122,29 +122,87 @@ class AlpacaWindow(Adw.ApplicationWindow):
 
     @Gtk.Template.Callback()
     def instance_changed(self, listbox, row):
-        def change_instance():
-            if self.last_selected_instance_row:
-                self.last_selected_instance_row.instance.stop()
+        if not listbox.get_sensitive():
+            return
+        listbox.set_sensitive(False)
+        previous_instance = self.last_selected_instance_row.instance if self.last_selected_instance_row else None
+        instance = row.instance if row else Widgets.instances.Empty()
+        self.last_selected_instance_row = row
 
-            self.last_selected_instance_row = row
-            if row and row.instance:
-                row.instance.start()
-
-            self.model_manager.update_added_model_list()
-            self.model_manager.update_available_model_list()
-
+        def finish_change(local_models, available_models):
+            # A failed request may have deselected this instance in the meantime.
+            selected_row = listbox.get_selected_row()
+            if selected_row is not row:
+                listbox.set_sensitive(True)
+                self.instance_changed(listbox, selected_row)
+                return
+            self.model_manager.update_available_model_list(available_models)
+            self.model_manager.update_added_model_list(local_models)
+            self.get_chat_list_page().auto_select_model()
             if row:
-                self.settings.set_string('selected-instance', row.instance.instance_id)
-                self.get_application().lookup_action('model_creator_existing').set_enabled(row.instance.instance_type in ('ollama', 'ollama:managed'))
-                self.get_application().lookup_action('model_creator_gguf').set_enabled(row.instance.instance_type in ('ollama', 'ollama:managed'))
+                self.settings.set_string('selected-instance', instance.instance_id)
+            for name in ('model_creator_existing', 'model_creator_gguf'):
+                self.get_application().lookup_action(name).set_enabled(instance.instance_type in ('ollama', 'ollama:managed'))
             listbox.set_sensitive(True)
-        if listbox.get_sensitive():
-            listbox.set_sensitive(False)
-            threading.Thread(target=change_instance, daemon=True).start()
+
+        def update_model_info(model_name, info):
+            if self.get_current_instance() is not instance:
+                return
+            model = Widgets.models.text.list_from_selector().get(model_name)
+            if not model:
+                return
+            model.data.update(info)
+            for window in self.get_application().get_windows():
+                footer = getattr(window, 'global_footer', None)
+                if footer:
+                    selected = footer.model_selector.get_selected_item()
+                    if selected and selected.model is model:
+                        footer.tool_selector.model_changed(footer.model_selector.selector)
+
+        def change_instance():
+            local_models, available_models = [], {}
+            pending_info = []
+            try:
+                if previous_instance:
+                    previous_instance.stop()
+                if row:
+                    instance.start()
+                instance.local_models = None
+                local_models = instance.get_local_models()
+                available_models = instance.get_available_models()
+                # Show the model list before fetching each model's metadata.
+                # Provisional capabilities prevent network calls from GTK callbacks.
+                for model in local_models:
+                    if 'capabilities' not in model:
+                        pending_info.append(model.get('name'))
+                        model['capabilities'] = []
+            except Exception as error:
+                logger.exception('Could not load instance')
+                Widgets.dialog.simple_error(self, _('Instance Error'), _('Could not retrieve added models'), str(error))
+            finally:
+                GLib.idle_add(finish_change, local_models, available_models)
+            pending_info.sort(key=lambda name: name != instance.properties.get('default_model'))
+            for model_name in pending_info:
+                if self.last_selected_instance_row is not row:
+                    break
+                try:
+                    info = instance.get_model_info(model_name)
+                    if hasattr(info, 'model_dump'):
+                        info = info.model_dump(exclude_none=True)
+                    GLib.idle_add(update_model_info, model_name, info)
+                except Exception:
+                    logger.exception('Could not retrieve model metadata')
+        threading.Thread(target=change_instance, daemon=True).start()
 
     @Gtk.Template.Callback()
     def closing_app(self, user_data):
         def close():
+            for chat in list(Widgets.chat.loaded_chats):
+                if chat.agent_session:
+                    chat.agent_session.pause()
+                    chat.pending_prompts.clear()
+                else:
+                    chat.stop_message()
             try:
                 self.settings.set_string('default-chat', self.chat_bin.get_child().chat_id)
             except Exception as e:
@@ -181,7 +239,7 @@ class AlpacaWindow(Adw.ApplicationWindow):
             logger.info("Hiding app...")
         else:
             logger.info("Closing app...")
-            is_chat_busy = any([chat_row.chat.busy for chat_row in list(self.get_chat_list_page().chat_list_box)])
+            is_chat_busy = any(chat.busy for chat in list(Widgets.chat.loaded_chats))
             is_model_downloading = any([el for el in list(self.model_manager.added_model_flowbox) if el.get_child().progressbar.get_visible()])
             if is_chat_busy or is_model_downloading:
                 options = {
@@ -207,70 +265,8 @@ class AlpacaWindow(Adw.ApplicationWindow):
     def message_search_changed(self, entry, current_chat=None):
         self.chat_bin.get_child().on_search(entry.get_text())
 
-    def send_message(self, mode:int=0, available_tools:dict={}): #mode 0=user 1=system
-        buffer = self.global_footer.get_buffer()
-
-        raw_message = buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter(), False).strip()
-        if not raw_message:
-            return
-
-        current_chat = self.chat_bin.get_child()
-        if current_chat.busy == True:
-            return
-
-        if self.get_current_instance().instance_type == 'empty':
-            self.get_application().lookup_action('instance_manager').activate()
-            return
-
-        current_model = self.get_selected_model().get_name()
-        if current_model is None:
-            Widgets.dialog.show_toast(_("Please select a model before chatting"), current_chat.get_root())
-            return
-
-        # Bring tab to top
-        row = current_chat.row
-        chat_list = row.get_parent()
-        GLib.idle_add(chat_list.unselect_all)
-        GLib.idle_add(chat_list.remove, row)
-        GLib.idle_add(chat_list.prepend, row)
-        GLib.idle_add(chat_list.select_row, row)
-
-        m_element = Widgets.message.Message(
-            dt=datetime.now(),
-            message_id=generate_uuid(),
-            mode=mode*2
-        )
-        current_chat.add_message(m_element)
-
-        for old_attachment in list(self.global_footer.attachment_container.container):
-            attachment = m_element.add_attachment(
-                file_id = generate_uuid(),
-                name = old_attachment.file_name,
-                attachment_type = old_attachment.file_type,
-                content = old_attachment.file_content
-            )
-            old_attachment.delete()
-            GLib.idle_add(SQL.insert_or_update_attachment, m_element, attachment)
-
-        m_element.block_container.set_content(raw_message)
-        GLib.idle_add(m_element.save)
-
-        buffer.delete(buffer.get_start_iter(), buffer.get_end_iter())
-        if mode==0:
-            m_element_bot = Widgets.message.Message(
-                dt=datetime.now(),
-                message_id=generate_uuid(),
-                mode=1,
-                author=current_model
-            )
-            current_chat.add_message(m_element_bot)
-            GLib.idle_add(m_element_bot.save)
-            if len(available_tools) > 0:
-                GLib.idle_add(threading.Thread(target=self.get_current_instance().use_tools, args=(m_element_bot, current_model, available_tools), daemon=True).start)
-            else:
-                GLib.idle_add(threading.Thread(target=self.get_current_instance().generate_message, args=(m_element_bot, current_model), daemon=True).start)
-        elif mode==1:
-            current_chat.set_visible_child_name('content')
+    def send_message(self, mode:int=0, available_tools:dict={}):
+        Widgets.prompt_queue.send_message(self, self.chat_bin.get_child(), mode, available_tools)
 
     def get_selected_model(self):
         selected_item = self.global_footer.model_selector.get_selected_item()
@@ -420,9 +416,6 @@ class AlpacaWindow(Adw.ApplicationWindow):
         self.chat_list_navigationview.add(root_folder)
         root_folder.update()
 
-        if self.get_application().args.new_chat:
-            self.get_chat_list_page().new_chat(self.get_application().args.new_chat)
-
         if len(SQL.get_instances()) == 0:
             self.main_navigation_view.replace([Widgets.guide.Guide()])
         else:
@@ -440,4 +433,3 @@ class AlpacaWindow(Adw.ApplicationWindow):
                 instance_listbox=self.instance_listbox,
                 selected_instance_id=self.settings.get_value('selected-instance').unpack()
             )
-

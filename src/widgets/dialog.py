@@ -5,6 +5,7 @@ Handles all dialogs
 
 import gi
 from gi.repository import Gtk, Gio, Adw, GLib
+from .main_thread import on_main_thread
 
 button_appearance={
     'suggested': Adw.ResponseAppearance.SUGGESTED,
@@ -235,6 +236,7 @@ def simple_dropdown(parent:Gtk.Widget, heading:str, body:str, callback:callable,
     dialog = DropDown(heading, body, list(options.keys())[0], options, items)
     dialog.show(parent)
 
+@on_main_thread
 def simple_error(parent:Gtk.Widget, title:str, body:str, error_log:str, callback:callable=None):
     if get_dialog_showing(parent):
         return

@@ -25,14 +25,24 @@ template $AlpacaGlobalActionStack: Gtk.Stack {
 
   Gtk.StackPage {
     name: "stop";
-    child: Gtk.Button stop_button {
-      tooltip-text: _("Stop Message");
-      icon-name: "media-playback-stop-symbolic";
-      clicked => $stop_message();
-      styles [
-        "destructive-action",
-        "br0"
-      ]
+    child: Gtk.Box {
+      Gtk.Button queue_button {
+        tooltip-text: _("Queue Message");
+        icon-name: "list-add-symbolic";
+        visible: false;
+        clicked => $use_default_mode();
+        styles ["accent", "br0"]
+      }
+
+      Gtk.Button stop_button {
+        tooltip-text: _("Stop Message");
+        icon-name: "media-playback-stop-symbolic";
+        clicked => $stop_message();
+        styles [
+          "destructive-action",
+          "br0"
+        ]
+      }
     };
   }
 }

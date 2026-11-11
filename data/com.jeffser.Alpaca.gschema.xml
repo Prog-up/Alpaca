@@ -49,6 +49,31 @@
 	  <key name="regenerate-after-edit" type="b">
 			<default>false</default>
 		</key>
+    <key name="queue-prompts" type="b">
+      <default>false</default>
+      <summary>Queue one message while generating</summary>
+      <description>Keep one waiting message per chat, with a preview and controls to edit or clear it before the current response finishes.</description>
+    </key>
+    <key name="agent-mode" type="b">
+      <default>false</default>
+      <summary>Clarify, plan, and execute tasks with an Ollama model</summary>
+    </key>
+    <key name="agent-auto-start" type="b">
+      <default>false</default>
+      <summary>Start an agent plan automatically when requirements are clear</summary>
+    </key>
+    <key name="agent-max-calls" type="i">
+      <range min="1" max="256"/>
+      <default>32</default>
+    </key>
+    <key name="agent-max-seconds" type="i">
+      <range min="30" max="7200"/>
+      <default>900</default>
+    </key>
+    <key name="agent-working-directory" type="s">
+      <default>''</default>
+      <summary>Agent working directory on the configured terminal host</summary>
+    </key>
 	  <key name="show-model-manager-shortcut" type="b">
 			<default>true</default>
 		</key>
@@ -80,6 +105,11 @@
 	  <key name="activity-terminal-ip" type="s">
 	    <default>""</default>
 	  </key>
+    <key name="activity-terminal-auto-execute" type="b">
+      <default>false</default>
+      <summary>Execute terminal tool commands automatically</summary>
+      <description>Run model-requested shell commands without showing the confirmation dialog.</description>
+    </key>
 	  <key name="activity-background-remover-model" type="i">
 	    <default>0</default>
 	  </key>

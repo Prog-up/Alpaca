@@ -4,7 +4,6 @@ from gi.repository import Gtk, Gio, Adw, GLib, Gdk, WebKit
 from .. import dialog, attachments, models
 from ...sql_manager import generate_uuid, Instance as SQL
 from ...constants import cache_dir, WEB_BROWSER_HTML_EXTRACT_JS
-from markitdown import MarkItDown
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse
 import tempfile, os, threading, requests, random
@@ -146,6 +145,7 @@ class WebBrowser(WebKit.WebView):
 
     def extract_md(self, save_func:callable):
         def on_html_extracted(raw_html:str):
+            from markitdown import MarkItDown
             md = MarkItDown(enable_plugins=False)
             markdown_text = raw_html
             try:
@@ -229,4 +229,3 @@ class WebBrowser(WebKit.WebView):
         parent = self.get_ancestor(Adw.Dialog)
         if parent:
             parent.close()
-

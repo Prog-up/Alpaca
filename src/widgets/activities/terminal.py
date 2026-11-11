@@ -7,6 +7,8 @@ import gi
 import sys
 from gi.repository import Gtk, Pango, GLib, Gdk, Gio, Adw, GtkSource, Vte
 import os
+import shlex
+import signal
 from ...sql_manager import Instance as SQL
 from ...constants import data_dir, IN_FLATPAK
 from .. import dialog, attachments, message, activities
@@ -29,7 +31,7 @@ commands = {
         'python -m http.server 8080 --directory "{sourcedir}"'
     ],
     'bash': [
-        'flatpak-spawn --host env TERM=xterm-256color script -q -c "{script}" /dev/null'
+        'flatpak-spawn --host env TERM=xterm-256color script -q -c {script} /dev/null'
     ] if IN_FLATPAK else ["{script}"]
 }
 
@@ -92,15 +94,18 @@ class Terminal(Vte.Terminal):
     dir_button = Gtk.Template.Child()
     reload_button = Gtk.Template.Child()
 
-    def __init__(self, language:str, code_getter:callable, extra_files:list=[], close_callback:callable=None):
+    def __init__(self, language:str, code_getter:callable, extra_files:list=[], close_callback:callable=None, connection=None):
         super().__init__()
         self.language = language
         self.code_getter = code_getter
         self.extra_files = extra_files
         self.close_callback = close_callback
+        self.connection = connection
+        self.child_pid = None
+        self.exit_code = None
+        self.closed = False
 
-        if self.close_callback:
-            self.connect('child-exited', lambda *_: self.close_callback())
+        self.connect('child-exited', self.child_exited)
 
         # Activities
         self.buttons = {
@@ -139,10 +144,27 @@ class Terminal(Vte.Terminal):
         return False
 
     def on_close(self) -> bool: # Called by activities.py
+        self.closed = True
         try:
             self.feed_child(b"\x03")
         except:
             pass
+        if self.child_pid:
+            try:
+                # VTE children have their own session; never signal the app's group.
+                group = os.getpgid(self.child_pid)
+                if group == self.child_pid:
+                    os.killpg(group, signal.SIGHUP)
+                else:
+                    os.kill(self.child_pid, signal.SIGHUP)
+            except ProcessLookupError:
+                pass
+        if self.close_callback:
+            self.close_callback()
+
+    def child_exited(self, terminal, status):
+        self.child_pid = None
+        self.exit_code = os.waitstatus_to_exitcode(status)
         if self.close_callback:
             self.close_callback()
 
@@ -202,23 +224,45 @@ mermaid.initialize({{ startOnLoad: true }});
                 script.append(command.format(sourcedir=self.sourcedir))
         elif self.language in ('bash', 'auto'):
             settings = Gio.Settings(schema_id="com.jeffser.Alpaca")
-            if settings.get_value('activity-terminal-type').unpack() == 0:
+            connection = self.connection or {
+                'type': settings.get_value('activity-terminal-type').unpack(),
+                'username': settings.get_value('activity-terminal-username').unpack() or os.getenv('USER'),
+                'host': settings.get_value('activity-terminal-ip').unpack() or '127.0.0.1'
+            }
+            if connection.get('working_directory'):
+                runtime_code = 'cd -- {} && {{\n{}\n}}'.format(shlex.quote(connection['working_directory']), runtime_code)
+            if connection['type'] == 0:
                 for command in commands.get('bash'):
-                    runtime_code = runtime_code.replace('"', '\\"')
-                    script.append(command.format(script=runtime_code))
+                    script.append(command.format(script=shlex.quote(runtime_code) if IN_FLATPAK else runtime_code))
             else:
-                runtime_code="ssh -o LogLevel=ERROR -t {}@{} -- {}".format(
-                    settings.get_value('activity-terminal-username').unpack() or os.getenv('USER'),
-                    settings.get_value('activity-terminal-ip').unpack() or '127.0.0.1',
-                    runtime_code.replace("'", "\\'")
-                )
-                script.append(runtime_code)
+                user = connection['username']
+                ip = connection['host']
+                # SSH joins remote arguments into a shell command. Quote for both shells.
+                remote_command = shlex.join(['bash', '-c', runtime_code])
+                script.append(shlex.join([
+                    'ssh', '-o', 'LogLevel=ERROR', '-o', 'StrictHostKeyChecking=no',
+                    '-t', '--', '{}@{}'.format(user, ip), remote_command
+                ]))
         if self.language != 'auto':
             script.append('echo -e "\n🦙 {}"'.format(_('Script Exited')))
         script.append('exit')
         return script
 
     def run(self):
+        self.exit_code = None
+        self.closed = False
+        def on_spawn(pty, task, user_data):
+            try:
+                self.child_pid = pty.spawn_finish(task)[1]
+                self.watch_child(self.child_pid)
+                if self.closed:
+                    self.on_close()
+            except GLib.Error as error:
+                self.exit_code = 255
+                self.feed(('Error: {}\r\n'.format(error)).encode('utf-8'))
+                if self.close_callback:
+                    self.close_callback()
+
         pty = Vte.Pty.new_sync(Vte.PtyFlags.DEFAULT, None)
         self.set_pty(pty)
         pty.spawn_async(
@@ -230,7 +274,7 @@ mermaid.initialize({{ startOnLoad: true }});
             None,
             -1,
             None,
-            lambda p, t, u: self.watch_child(p.spawn_finish(t)[1]),
+            on_spawn,
             None
         )
         self.reload_button.set_sensitive(True)
@@ -382,4 +426,3 @@ class CodeEditor(Gtk.ScrolledWindow):
     def on_reload(self, button=None):
         code = self.get_original_code()
         self.buffer.set_text(code, len(code.encode('utf-8')))
-

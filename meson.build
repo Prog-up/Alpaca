@@ -12,6 +12,9 @@ subdir('data')
 subdir('src')
 subdir('po')
 
+test('Terminal regression tests', import('python').find_installation('python3'),
+     args: ['-m', 'unittest', 'discover', '-s', meson.current_source_dir() / 'tests', '-v'])
+
 gnome.post_install(
      glib_compile_schemas: true,
     gtk_update_icon_cache: true,

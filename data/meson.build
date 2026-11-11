@@ -7,6 +7,15 @@ desktop_file = i18n.merge_file(
   install_dir: get_option('datadir') / 'applications'
 )
 
+quickask_desktop_file = i18n.merge_file(
+        input: 'com.jeffser.Alpaca.QuickAsk.desktop.in',
+       output: 'com.jeffser.Alpaca.QuickAsk.desktop',
+         type: 'desktop',
+       po_dir: '../po',
+      install: true,
+  install_dir: get_option('datadir') / 'applications'
+)
+
 searchprovider_desktop_file = i18n.merge_file(
         input: 'com.jeffser.Alpaca.SearchProvider.desktop.in',
        output: 'com.jeffser.Alpaca.SearchProvider.desktop',
@@ -19,6 +28,7 @@ searchprovider_desktop_file = i18n.merge_file(
 desktop_utils = find_program('desktop-file-validate', required: false)
 if desktop_utils.found()
   test('Validate desktop file', desktop_utils, args: [desktop_file])
+  test('Validate Quick Ask desktop file', desktop_utils, args: [quickask_desktop_file])
   test('Validate search provider desktop file', desktop_utils, args: [searchprovider_desktop_file])
 endif
 
@@ -41,6 +51,12 @@ install_data('com.jeffser.Alpaca.gschema.xml',
 )
 
 compile_schemas = find_program('glib-compile-schemas', required: true, disabler: true)
+custom_target('Development settings schema',
+  input: 'com.jeffser.Alpaca.gschema.xml',
+  output: 'gschemas.compiled',
+  command: [compile_schemas, '--strict', '--targetdir=' + meson.current_build_dir(), meson.current_source_dir()],
+  build_by_default: true,
+)
 test('Validate schema file',
      compile_schemas,
      args: ['--strict', '--dry-run', meson.current_source_dir()])

@@ -1,3 +1,3 @@
 # __init__.py
 
-from . import chat, dialog, message, attachments, voice, instances, models, preferences, activities, guide
+from . import chat, dialog, message, attachments, voice, instances, models, preferences, activities, guide, prompt_queue

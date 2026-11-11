@@ -163,6 +163,10 @@ class Instance:
 
         with SQLiteConnection() as c:
             tables = {
+                "agent_task": {
+                    "chat_id": "TEXT NOT NULL PRIMARY KEY",
+                    "data": "TEXT NOT NULL"
+                },
                 "chat": {
                     "id": "TEXT NOT NULL PRIMARY KEY",
                     "name": "TEXT NOT NULL",
@@ -393,6 +397,7 @@ class Instance:
 
     def delete_chat(chat) -> None:
         with SQLiteConnection() as c:
+            c.cursor.execute('DELETE FROM agent_task WHERE chat_id=?', (chat.chat_id,))
             c.cursor.execute("DELETE FROM chat WHERE id=?", (chat.chat_id,))
 
             for message in c.cursor.execute(
@@ -412,6 +417,7 @@ class Instance:
             c.cursor.execute("DELETE FROM chat")
             c.cursor.execute("DELETE FROM message")
             c.cursor.execute("DELETE FROM attachment")
+            c.cursor.execute('DELETE FROM agent_task')
 
     def duplicate_chat(old_chat_id:str, new_chat) -> None:
         with SQLiteConnection() as c:
@@ -730,6 +736,26 @@ class Instance:
 
         return instances
 
+    def save_agent_task(chat_id, data):
+        if chat_id:
+            with SQLiteConnection() as c:
+                if not c.cursor.execute('SELECT 1 FROM chat WHERE id=?', (chat_id,)).fetchone():
+                    return
+                c.cursor.execute('INSERT INTO agent_task(chat_id,data) VALUES(?,?) '
+                                 'ON CONFLICT(chat_id) DO UPDATE SET data=excluded.data',
+                                 (chat_id, json.dumps(data, ensure_ascii=False)))
+
+    def get_agent_task(chat_id):
+        if chat_id:
+            with SQLiteConnection() as c:
+                row = c.cursor.execute('SELECT data FROM agent_task WHERE chat_id=?', (chat_id,)).fetchone()
+                return json.loads(row[0]) if row else None
+
+    def delete_agent_task(chat_id):
+        if chat_id:
+            with SQLiteConnection() as c:
+                c.cursor.execute('DELETE FROM agent_task WHERE chat_id=?', (chat_id,))
+
     def get_instances() -> list:
         with SQLiteConnection() as c:
             result = c.cursor.execute("SELECT * FROM instance").fetchall()
@@ -890,4 +916,3 @@ class Instance:
 
         for row in result:
             Instance.remove_folder(row[0])
-

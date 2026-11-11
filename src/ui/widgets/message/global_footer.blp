@@ -10,6 +10,52 @@ template $AlpacaGlobalFooter: Gtk.Box {
 
   $AlpacaAttachmentContainer attachment_container {}
 
+  Gtk.Box agent_box {
+    visible: false;
+    orientation: vertical;
+    spacing: 6;
+    styles ["card", "p10"]
+  }
+
+  Gtk.Box prompt_queue_box {
+    visible: false;
+    orientation: vertical;
+    spacing: 6;
+    styles ["card", "p10"]
+
+    Gtk.Box {
+      spacing: 6;
+      Gtk.Label {
+        label: _("Queued Message");
+        hexpand: true;
+        xalign: 0;
+        styles ["heading"]
+      }
+      Gtk.Button {
+        label: _("Edit");
+        tooltip-text: _("Move the queued message into the composer to edit it");
+        clicked => $edit_queued_prompt();
+        styles ["flat"]
+      }
+      Gtk.Button {
+        label: _("Clear");
+        clicked => $clear_prompt_queue();
+        styles ["flat"]
+      }
+    }
+    Gtk.ScrolledWindow {
+      max-content-height: 120;
+      propagate-natural-height: true;
+      hscrollbar-policy: never;
+      child: Gtk.Label prompt_queue_label {
+        xalign: 0;
+        wrap: true;
+        wrap-mode: word_char;
+        selectable: true;
+      };
+    }
+  }
+
   Gtk.Box message_text_view_container {
     overflow: hidden;
     styles [

@@ -9,6 +9,9 @@ widgets = [
   'voice.py',
   'guide.py',
   'preferences.py',
+  'prompt_queue.py',
+  'main_thread.py',
+  'agent.py',
 ]
 
 install_data(widgets, install_dir: moduledir)

@@ -48,7 +48,6 @@ os.environ["TORCH_HOME"] = os.path.join(data_dir, "torch")
 import sys
 import logging
 import argparse
-import time
 import threading
 
 from pydbus import SessionBus
@@ -111,14 +110,23 @@ class AlpacaService:
                 return
 
     def Create(self, chat_name:str):
-        self.app.props.active_window.new_chat(chat_name)
-        self.Present()
+        window = self.app.get_main_window()
+        window.get_chat_list_page().new_chat(chat_name)
+        window.present()
 
     def Ask(self, message:str):
-        time.sleep(1)
         quick_ask_window = self.app.create_quick_ask()
         quick_ask_window.present()
-        quick_ask_window.write_and_send_message(message)
+        # Model loading is asynchronous. Wait on the main loop rather than blocking
+        # GTK or sending twice from both the constructor and this service method.
+        def send_when_ready():
+            if not quick_ask_window.get_visible():
+                return GLib.SOURCE_REMOVE
+            if quick_ask_window.get_selected_model().get_name() is None:
+                return GLib.SOURCE_CONTINUE
+            quick_ask_window.write_and_send_message(message)
+            return GLib.SOURCE_REMOVE
+        GLib.timeout_add(100, send_when_ready)
 
     def Activity(self, activity_name:str):
         page = activities.ARGUMENT_ACTIVITIES.get(activity_name)

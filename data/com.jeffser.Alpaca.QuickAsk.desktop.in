@@ -1,0 +1,12 @@
+[Desktop Entry]
+Name=Alpaca Quick Ask
+Comment=Open a quick conversation with Alpaca
+Exec=alpaca --quick-ask
+Icon=com.jeffser.Alpaca
+Terminal=false
+Type=Application
+Categories=Network;Chat;
+Keywords=alpaca;ai;ollama;llm;chat;quick;ask;
+StartupNotify=true
+StartupWMClass=com.jeffser.Alpaca
+X-Purism-FormFactor=Workstation;Mobile;

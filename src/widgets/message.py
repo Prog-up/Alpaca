@@ -6,6 +6,7 @@ Handles the message widget
 import gi
 from gi.repository import Gtk, Gio, Adw, GLib, Gdk, GtkSource, Spelling
 import os, datetime, threading, sys, base64, logging, re, tempfile
+from .main_thread import on_main_thread
 from ..sql_manager import prettify_model_name, generate_uuid, format_datetime, Instance as SQL
 from . import attachments, blocks, dialog, voice, tools, models, chat, activities
 
@@ -79,6 +80,9 @@ class OptionPopup(Gtk.Popover):
         self.popdown()
 
         if not chat_element.busy and current_model and message_element:
+            chat_element.busy = True
+            chat_element.active_message = message_element
+            self.get_root().global_footer.toggle_action_button(False)
             for att in list(message_element.image_attachment_container.container) + list(message_element.attachment_container.container):
                 SQL.delete_attachment(att)
                 att.unparent()
@@ -141,13 +145,15 @@ class BlockContainer(Gtk.Box):
     def show_thinking_block(self):
         if not self.thinking_block or not self.thinking_block.get_parent():
             self.thinking_block = blocks.Thinking()
-            GLib.idle_add(self.prepend, self.thinking_block)
+            self.prepend(self.thinking_block)
 
+    @on_main_thread
     def clear(self) -> None:
         for child in list(self):
             if child != self.generating_block:
                 self.remove(child)
 
+    @on_main_thread
     def set_content(self, content:str) -> None:
         self.clear()
         message = self.get_ancestor(Message)
@@ -196,7 +202,7 @@ class BlockContainer(Gtk.Box):
 
     def add_thinking(self, content:str) -> None:
         self.show_thinking_block()
-        GLib.idle_add(self.thinking_block.append_content, content)
+        self.thinking_block.append_content(content)
 
 @Gtk.Template(resource_path='/com/jeffser/Alpaca/widgets/message/message.ui')
 class Message(Gtk.Box):
@@ -333,23 +339,26 @@ class Message(Gtk.Box):
                 self.block_container.remove(self.block_container.thinking_block)
             self.block_container.thinking_block = None
 
+    @on_main_thread
     def update_message(self, content:str):
         if content:
-            GLib.idle_add(self.block_container.generating_block.append_content, content)
-            GLib.idle_add(self.main_stack.set_visible_child_name, 'content')
+            self.block_container.show_generating_block()
+            self.block_container.generating_block.append_content(content)
+            self.main_stack.set_visible_child_name('content')
 
             chat_element = self.get_ancestor(chat.Chat)
             if chat_element:
                 vadjustment = chat_element.scrolledwindow.get_vadjustment()
                 if vadjustment.get_value() + 150 >= vadjustment.get_upper() - vadjustment.get_page_size():
-                    GLib.idle_add(vadjustment.set_value, vadjustment.get_upper() - vadjustment.get_page_size())
+                    vadjustment.set_value(vadjustment.get_upper() - vadjustment.get_page_size())
 
-            GLib.idle_add(self.remove_and_attach_thought)
+            self.remove_and_attach_thought()
 
+    @on_main_thread
     def update_thinking(self, content):
         if content:
             self.block_container.add_thinking(content)
-            GLib.idle_add(self.main_stack.set_visible_child_name, 'content')
+            self.main_stack.set_visible_child_name('content')
 
             chat_element = self.get_ancestor(chat.Chat)
             if chat_element:
@@ -357,9 +366,12 @@ class Message(Gtk.Box):
                 if vadjustment.get_value() + 150 >= vadjustment.get_upper() - vadjustment.get_page_size():
                     GLib.idle_add(vadjustment.set_value, vadjustment.get_upper() - vadjustment.get_page_size())
 
-    def finish_generation(self, response_metadata:str=None):
+    @on_main_thread
+    def finish_generation(self, response_metadata:str=None, success:bool=True):
         chat_element = self.get_ancestor(chat.Chat)
-        root = chat_element.get_root() or chat_element.row.get_root()
+        if not chat_element:
+            return
+        root = chat_element.get_root() or (chat_element.row.get_root() if chat_element.row else None)
 
         def send_notification():
             result_text = self.get_content()
@@ -380,8 +392,6 @@ class Message(Gtk.Box):
 
         GLib.idle_add(self.popup.change_status, True)
 
-        if chat_element and root:
-            chat_element.stop_message()
         self.dt = datetime.datetime.now()
 
         def add_buffer_content(buffer:Gtk.TextBuffer):
@@ -401,6 +411,9 @@ class Message(Gtk.Box):
                 content=response_metadata
             )
             SQL.insert_or_update_attachment(self, attachment)
+
+        if chat_element:
+            GLib.idle_add(chat_element.finish_generation, self, success)
 
         #sys.exit() #Exit thread
 
@@ -493,10 +506,11 @@ class GlobalMessageTextView(GtkSource.View):
 @Gtk.Template(resource_path='/com/jeffser/Alpaca/widgets/message/global_action_stack.ui')
 class GlobalActionStack(Gtk.Stack):
     __gtype_name__ = 'AlpacaGlobalActionStack'
+    queue_button = Gtk.Template.Child()
 
     @Gtk.Template.Callback()
     def stop_message(self, button=None):
-        self.get_root().chat_bin.get_child().stop_message()
+        self.get_root().get_current_chat().stop_message()
 
     @Gtk.Template.Callback()
     def use_default_mode(self, button=None):
@@ -556,10 +570,29 @@ class GlobalFooter(Gtk.Box):
     model_selector = Gtk.Template.Child()
     tool_selector = Gtk.Template.Child()
     wrap_box = Gtk.Template.Child()
+    prompt_queue_box = Gtk.Template.Child()
+    prompt_queue_label = Gtk.Template.Child()
+    agent_box = Gtk.Template.Child()
 
     def __init__(self):
         self.send_callback = None
+        self.queued_edit_chat = None
         super().__init__()
+        self.get_buffer().connect('changed', self.queued_edit_changed)
+        self.agent_heading = Gtk.Label(xalign=0, wrap=True, css_classes=['heading'])
+        self.agent_detail = Gtk.Label(xalign=0, wrap=True, selectable=True)
+        self.agent_box.append(self.agent_heading)
+        self.agent_box.append(Gtk.ScrolledWindow(child=self.agent_detail, max_content_height=200,
+                                               propagate_natural_height=True, hscrollbar_policy=2))
+        controls = Adw.WrapBox(child_spacing=6, line_spacing=6)
+        self.agent_buttons = {}
+        for name, label in [('resume', _('Start')), ('pause', _('Pause')), ('stop', _('Stop')),
+                            ('edit', _('Edit Requirements')), ('new', _('New Task'))]:
+            button = Gtk.Button(label=label)
+            button.connect('clicked', lambda button, action=name: self.agent_action(action))
+            controls.append(button)
+            self.agent_buttons[name] = button
+        self.agent_box.append(controls)
         drop_target = Gtk.DropTarget.new(Gdk.FileList, Gdk.DragAction.COPY)
         drop_target.connect('drop', self.on_file_drop)
         self.add_controller(drop_target)
@@ -569,6 +602,8 @@ class GlobalFooter(Gtk.Box):
 
         settings = Gio.Settings(schema_id="com.jeffser.Alpaca")
         settings.bind('show-model-manager-shortcut', self.model_manager_shortcut, 'visible', Gio.SettingsBindFlags.DEFAULT)
+        settings.bind('queue-prompts', self.action_stack.queue_button, 'visible', Gio.SettingsBindFlags.DEFAULT)
+        settings.connect('changed::queue-prompts', self.queue_setting_changed)
 
         self.model_selector.selector.connect('notify::selected', lambda dropdown, gparam: self.tool_selector.model_changed(dropdown))
         self.action_stack.set_sensitive(len(models.text.model_selector_model) > 0)
@@ -589,6 +624,103 @@ class GlobalFooter(Gtk.Box):
 
     def toggle_action_button(self, state:bool):
         self.action_stack.set_visible_child_name('send' if state else 'stop')
+
+    def update_prompt_queue(self, current_chat):
+        queued = bool(current_chat.pending_prompts)
+        self.prompt_queue_box.set_visible(queued)
+        prompt = current_chat.pending_prompts[0] if queued else None
+        self.prompt_queue_label.set_text(prompt['text'] if prompt else '')
+        self.action_stack.queue_button.set_sensitive(not queued)
+
+    def queued_edit_changed(self, buffer):
+        def clear_if_empty():
+            if buffer.get_char_count() == 0:
+                self.queued_edit_chat = None
+            return GLib.SOURCE_REMOVE
+        GLib.idle_add(clear_if_empty)
+
+    @Gtk.Template.Callback()
+    def edit_queued_prompt(self, button=None):
+        root = self.get_root()
+        current_chat = root.get_current_chat()
+        if not current_chat.pending_prompts:
+            return
+        prompt = current_chat.pending_prompts.popleft()
+        buffer = self.get_buffer()
+        # Keep replacing an existing draft undoable with the normal text-view Undo.
+        buffer.begin_user_action()
+        buffer.delete(buffer.get_start_iter(), buffer.get_end_iter())
+        buffer.insert(buffer.get_start_iter(), prompt['text'], len(prompt['text'].encode('utf-8')))
+        buffer.end_user_action()
+        for data in prompt['attachments']:
+            self.attachment_container.add_attachment(attachments.Attachment(
+                file_id='-1', file_name=data['name'], file_type=data['type'], file_content=data['content']))
+        self.queued_edit_chat = current_chat
+        self.update_prompt_queue(current_chat)
+        root.set_focus(self.message_text_view)
+
+    def update_agent(self, current_chat):
+        session = current_chat.agent_session
+        self.agent_box.set_visible(session is not None)
+        if session is None:
+            return
+        data = session.controller.snapshot()
+        phase = data['phase']
+        labels = {'clarifying': _('Clarifying Requirements'), 'executing': _('Executing Plan'),
+                  'waiting_for_answer': _('Waiting for Your Answer'), 'waiting_for_start': _('Ready to Start'),
+                  'paused': _('Paused'), 'completed': _('Completed'), 'failed': _('Failed'), 'canceled': _('Canceled')}
+        target = data['target']
+        location = '{}@{}'.format(target['username'], target['host']) if target['type'] == 1 else _('Local Terminal')
+        self.agent_heading.set_text('{} · {} · {}'.format(labels.get(phase, phase), data['model'], location))
+        lines = [data['goal']]
+        if target.get('working_directory'):
+            lines.append(_('Directory: {}').format(target['working_directory']))
+        lines.extend('{}. {}'.format(i + 1, q) for i, q in enumerate(data['questions']))
+        icons = {'pending': '○', 'running': '▶', 'completed': '✓', 'failed': '✗'}
+        lines.extend('{} {}. {}'.format(icons[step['status']], i + 1, step['text']) for i, step in enumerate(data['steps']))
+        if data.get('summary'):
+            lines.append(data['summary'])
+        self.agent_detail.set_text('\n'.join(lines))
+        ready = current_chat.active_message is None
+        self.agent_buttons['resume'].set_label(_('Start') if phase == 'waiting_for_start' else _('Resume'))
+        self.agent_buttons['resume'].set_visible(phase in {'waiting_for_start', 'paused'})
+        self.agent_buttons['resume'].set_sensitive(ready)
+        self.agent_buttons['pause'].set_visible(phase in {'clarifying', 'executing'})
+        self.agent_buttons['stop'].set_visible(phase not in {'completed', 'failed', 'canceled'})
+        self.agent_buttons['edit'].set_visible(phase not in {'completed', 'failed', 'canceled'})
+        self.agent_buttons['new'].set_visible(True)
+
+    def agent_action(self, action):
+        root = self.get_root()
+        current_chat = root.get_current_chat()
+        session = current_chat.agent_session
+        if not session:
+            return
+        if action == 'resume':
+            session.resume(root)
+        elif action == 'pause':
+            session.pause()
+        elif action == 'edit':
+            session.pause(editing=True)
+            root.set_focus(self.message_text_view)
+        elif action in {'stop', 'new'}:
+            current_chat.stop_message()
+            if action == 'new':
+                current_chat.agent_session = None
+                SQL.delete_agent_task(current_chat.chat_id)
+        self.update_agent(current_chat)
+
+    @Gtk.Template.Callback()
+    def clear_prompt_queue(self, button=None):
+        root = self.get_root()
+        if root:
+            current_chat = root.get_current_chat()
+            current_chat.pending_prompts.clear()
+            self.update_prompt_queue(current_chat)
+
+    def queue_setting_changed(self, settings, key):
+        if not settings.get_boolean(key):
+            self.clear_prompt_queue()
 
     def get_buffer(self):
         return self.message_text_view.get_buffer()

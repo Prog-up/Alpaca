@@ -70,10 +70,10 @@ class ModelManager(Adw.NavigationPage):
                 return
         self.added_model_stack.set_visible_child_name('no-results' if len(list(self.added_model_flowbox)) > 0 else 'no-models')
 
-    def update_available_model_list(self):
+    def update_available_model_list(self, available_models=None):
         self.available_model_flowbox.remove_all()
         instance = self.get_root().get_current_instance()
-        common.set_available_models_data(instance.get_available_models())
+        common.set_available_models_data(instance.get_available_models() if available_models is None else available_models)
         available_models_data = common.get_available_models_data()
 
         # Filter
@@ -124,14 +124,15 @@ class ModelManager(Adw.NavigationPage):
                     model_element.get_parent().set_focusable(False)
         self.update_available_visibility()
 
-    def update_added_model_list(self):
+    def update_added_model_list(self, local_models=None):
         self.added_model_flowbox.remove_all()
         text.empty_model_selector()
         instance = self.get_root().get_current_instance()
 
         # Normal Models
-        instance.local_models = None # Reset cache
-        local_models = instance.get_local_models()
+        if local_models is None:
+            instance.local_models = None # Reset cache
+            local_models = instance.get_local_models()
         for model in local_models:
             self.create_text_model(
                 model_name=model.get('name'),
@@ -272,4 +273,3 @@ class ModelManager(Adw.NavigationPage):
         model_element.get_parent().set_focusable(False)
         self.update_added_visibility()
         return model_element
-

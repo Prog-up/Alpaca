@@ -46,7 +46,8 @@ class BaseInstance:
             except:
                 pass
         
-            chat_element.busy = True
+            if chat_element.active_message is None:
+                chat_element.busy = True
             GLib.idle_add(chat_element.set_visible_child_name, 'content')
 
         messages = chat_element.convert_to_ollama()[:list(chat_element.container).index(bot_message)]
@@ -143,6 +144,7 @@ class BaseInstance:
         metadata_string = ""
         thought = ""
         content = ""
+        success = True
         try:
             bot_message.block_container.clear()
             while chat.busy:
@@ -212,6 +214,7 @@ class BaseInstance:
                     GLib.idle_add(add_attachment)
 
         except ollama.ResponseError as e:
+            success = False
             logger.error(e)
             if e.status_code == 401:
                 if self.instance_type == 'ollama:managed':
@@ -236,6 +239,7 @@ class BaseInstance:
                     )
                     bot_message.update_message("🦙 Just a quick heads-up! To access the Ollama cloud models, you'll need to log into your Ollama account first from the server.")
         except Exception as e:
+            success = False
             if self.instance_type != 'ollama:managed' or is_ollama_installed():
                 dialog.simple_error(
                     parent = bot_message.get_root(),
@@ -249,7 +253,7 @@ class BaseInstance:
 
         if not self.properties.get('show_response_metadata'):
             metadata_string = None
-        bot_message.finish_generation(metadata_string)
+        bot_message.finish_generation(metadata_string, success=success)
 
     def generate_chat_title(self, chat, prompt:str, fallback_model:str):
         if not chat.row or not chat.row.get_parent():
@@ -318,11 +322,10 @@ class BaseInstance:
 
     def start(self):
         if not self.client:
+            api = (self.properties.get('api') or '').strip()
             self.client = ollama.Client(
                 host=self.properties.get('url'),
-                headers={
-                    'Authorization': 'Bearer {}'.format(self.properties.get('api'))
-                },
+                headers={'Authorization': 'Bearer {}'.format(api)} if api else {},
                 verify=not self.properties.get('allow_self_signed_ssl', False)
             )
 
